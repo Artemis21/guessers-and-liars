@@ -5,6 +5,7 @@ import itertools
 import logging
 import random
 import string
+import time
 from collections import defaultdict
 from typing import Any, Callable
 
@@ -48,20 +49,29 @@ class SubmissionInterface:
     def __init__(self, package: Any, name: str, *init_args: tuple[Any]):
         """Load the submission."""
         self.name = name
-        module = getattr(package, name)
+        self.execution_time = 0
+        self.submission = None
+        self.package = package
+        self.init_args = init_args
+
+    def run(self):
+        """Run the submission."""
+        module = getattr(self.package, self.name)
         if not hasattr(module, 'Main'):
             raise SubmissionError(
-                f'Submission {name} has no Main class.', self.name
+                f'Submission {self.name} has no Main class.', self.name
             )
         with self.handle_submission_errors():
-            self.submission = module.Main(*init_args)
+            self.submission = module.Main(*self.init_args)
 
     @contextlib.contextmanager
     def handle_submission_errors(self):
         """Catch any errors and raise them as SubmissionErrors."""
+        start_time = time.time()
         try:
             yield
         except Exception as e:
+            self.execution_time += time.time() - start_time
             if isinstance(e, SubmissionError):
                 # Don't catch our opponent's errors
                 raise e
@@ -71,6 +81,7 @@ class SubmissionInterface:
                 f'Submission {self.name} raised a {type(e).__name__} error: '
                 f'{e}', self.name
             ) from e
+        self.execution_time += time.time() - start_time
 
 
 class LiarInterface(SubmissionInterface):
@@ -79,6 +90,7 @@ class LiarInterface(SubmissionInterface):
     def __init__(self, name: str, rng: random.Random, secret: int):
         """Initialise the liar."""
         super().__init__(liars, name, rng, secret)
+        self.run()
 
     def __call__(self, guess: int) -> int:
         """Ask the liar to respond to a guess."""
@@ -100,7 +112,9 @@ class GuesserInterface(SubmissionInterface):
             liar_callback: Callable[[int], int]):
         """Initialise the guesser with their guess callback."""
         self.liar_callback = liar_callback
-        super().__init__(guessers, name, rng, self.callback)
+        self.name = name
+        self.rng = rng
+        super().__init__(guessers, self.name, self.rng, self.callback)
 
     def callback(self, guess: int) -> int:
         """Respond to the guesser's guess."""
@@ -127,6 +141,10 @@ class GameManager:
         self.lies_remaining = LIES_ALLOWED
         self.liar = LiarInterface(liar, liar_rng, self.secret)
         self.guesser = GuesserInterface(guesser, guesser_rng, self.callback)
+
+    def run(self):
+        """Run the game."""
+        self.guesser.run()
         # GuesserInterface __init__ should never return, just raise GameOver,
         # so if we've got this far, the guesser exited early.
         raise GameOver(SECRET_RANGE * (LIES_ALLOWED + 1))
@@ -170,6 +188,7 @@ class TourneyManager:
         self.game_scores = defaultdict(int)
         self.liar_scores = defaultdict(int)
         self.guesser_scores = defaultdict(int)
+        self.execution_times = defaultdict(int)
         self.disqualified = []
         self.run_games()
         self.calculate_scores()
@@ -188,9 +207,15 @@ class TourneyManager:
     def run_game(self, secret: int, liar: str, guesser: str):
         """Run a game between two submissions."""
         try:
-            GameManager(self.rng, secret, liar, guesser)
+            game = GameManager(self.rng, secret, liar, guesser)
+            game.run()
         except GameOver as game_over:
             self.game_scores[liar, guesser] += game_over.guesses
+            self.execution_times[liar] += game.liar.execution_time
+            self.execution_times[guesser] += (
+                game.guesser.execution_time
+                - game.liar.execution_time
+            )
         except SubmissionError as submission_error:
             logger.warning(str(submission_error))
             self.disqualified.append(submission_error.submission)
@@ -209,6 +234,13 @@ class TourneyManager:
             self.liar_scores[liar] = round(score / game_counts[liar])
         for guesser, score in self.guesser_scores.items():
             self.guesser_scores[guesser] = round(score / game_counts[guesser])
+        for submission, exec_time in list(self.execution_times.items()):
+            if not game_counts[submission]:
+                del self.execution_times[submission]
+            else:
+                self.execution_times[submission] = (
+                    exec_time / game_counts[submission]
+                )
 
     def print_results(self):
         """Print the results to stdout."""
@@ -216,18 +248,27 @@ class TourneyManager:
             self.liar_scores,
             key=lambda liar: self.liar_scores[liar],
             reverse=True
-        )[:10]
+        )
         top_guessers = sorted(
             self.guesser_scores,
             key=lambda guesser: self.guesser_scores[guesser]
-        )[:10]
+        )
+        execution_times = sorted(
+            self.execution_times,
+            key=lambda submission: self.execution_times[submission],
+            reverse=True
+        )
         print(f'{self.repetitions} repetitions with seed {self.seed}:')
-        print('\nTop 10 liars:\n' + '-' * 37)
+        print('\nTop liars:\n' + '-' * 37)
         for liar in top_liars:
             print(f'{liar:<32} {self.liar_scores[liar]:>4}')
-        print('\nTop 10 guessers:\n' + '-' * 37)
+        print('\nTop guessers:\n' + '-' * 37)
         for guesser in top_guessers:
             print(f'{guesser:<32} {self.guesser_scores[guesser]:>4}')
+        print('\nSlowest submissions:\n' + '-' * 37)
+        for submission in execution_times:
+            execution_time = float(self.execution_times[submission])
+            print(f'{submission:<32} {execution_time:>4.2}s')
         print(f'\n{len(self.disqualified)} submissions were disqualified.')
 
 
