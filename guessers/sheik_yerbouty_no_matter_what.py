@@ -7,7 +7,7 @@ def Main(rng: random.Random, liar: Callable[[int], int]):
 	i = 0
 
 	while i < 9:
-		low = guess = res = j = 0
+		low = j = 0
 		high = 255
 
 		while j < 8:
