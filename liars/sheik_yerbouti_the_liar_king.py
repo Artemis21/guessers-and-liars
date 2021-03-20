@@ -1,4 +1,4 @@
-import random, math
+import random
 
 class Main:
 

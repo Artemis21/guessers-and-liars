@@ -1,7 +1,6 @@
 import random
 from typing import Callable
 
-
 def Main(rng: random.Random, liar: Callable[[int], int]):
     i = 0
 
